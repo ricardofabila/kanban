@@ -1,0 +1,7 @@
+# SQLite database and its journals — never commit user data
+/data/*.sqlite
+/data/*.sqlite-journal
+/data/*.sqlite-wal
+/data/*.sqlite-shm
+
+.DS_Store
