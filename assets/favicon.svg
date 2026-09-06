@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Kanban">
+  <title>Kanban</title>
+  <rect width="32" height="32" rx="8" fill="#3b6ef5"/>
+  <!-- Three columns filling from the top.
+       Every coordinate is even, so at 16px — an exact 2:1 downscale — each edge
+       lands on a whole pixel instead of blurring across two. -->
+  <rect x="6"  y="8" width="4" height="16" rx="2" fill="#fff"/>
+  <rect x="14" y="8" width="4" height="10" rx="2" fill="#fff"/>
+  <rect x="22" y="8" width="4" height="6"  rx="2" fill="#fff"/>
+</svg>

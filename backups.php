@@ -66,6 +66,7 @@ $counts   = [
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Backups · Kanban</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/styles.css">
 <script src="assets/backups.js" defer></script>
 </head>

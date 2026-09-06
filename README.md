@@ -33,6 +33,7 @@ To reset everything — password included — delete `data/database.sqlite`.
 ├── assets/
 │   ├── app.js        Board: rendering, dialogs, SortableJS, fetch calls
 │   ├── backups.js    Backups page: confirmations, local timestamps
+│   ├── favicon.svg   Tab icon
 │   └── styles.css    All styling, light + dark
 └── data/
     ├── database.sqlite   Created on first run (gitignored)
