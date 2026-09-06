@@ -211,7 +211,14 @@ body {
   font-weight: 650;
   text-transform: uppercase;
   letter-spacing: .04em;
+  /* Three controls share this row — the title gives way, they don't. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.column-header .icon-btn,
+.column-count { flex: 0 0 auto; }
 .column-count {
   font-size: 11px;
   color: var(--text-muted);
@@ -263,9 +270,10 @@ body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 9px 30px 9px 11px;
+  padding: 9px 52px 9px 11px; /* right gutter reserved so hover can't reflow text */
   box-shadow: var(--shadow);
   cursor: grab;
+  transition: border-color .12s ease, box-shadow .12s ease, transform .12s ease;
 }
 .card:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
 .card:active { cursor: grabbing; }
@@ -285,18 +293,50 @@ body {
   white-space: pre-line;
 }
 
-.card-edit {
+.card-actions {
   position: absolute;
-  top: 5px;
+  top: 4px;
   right: 4px;
+  display: flex;
+  gap: 1px;
   opacity: 0;
-  transition: opacity .12s ease;
+  transform: translateX(4px);
+  transition: opacity .14s ease, transform .14s ease;
 }
-.card:hover .card-edit,
-.card:focus-within .card-edit { opacity: 1; }
+.card:hover .card-actions,
+.card:focus-within .card-actions { opacity: 1; transform: none; }
+
+.card-actions .icon-btn { width: 22px; height: 22px; font-size: 12px; }
 
 .card-ghost { opacity: .4; }
 .card-drag  { box-shadow: 0 10px 20px rgba(9, 30, 66, .25); }
+
+/* Collapsing a card, column or project row away. JS sets the end values on the
+   element; these carry them. Cards and rows shrink by height, columns by
+   flex-basis — that is what gives a column its width. */
+.collapsing {
+  overflow: hidden;
+  pointer-events: none;
+  box-shadow: none;
+  min-width: 0;
+  transition: height .22s cubic-bezier(.4, 0, .2, 1),
+              flex-basis .22s cubic-bezier(.4, 0, .2, 1),
+              padding .22s cubic-bezier(.4, 0, .2, 1),
+              margin .22s cubic-bezier(.4, 0, .2, 1),
+              opacity .16s ease,
+              transform .22s ease;
+}
+
+/* Anything restored from a toast announces itself. */
+@keyframes restored-in {
+  from { opacity: 0; transform: translateY(-6px) scale(.96); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes restored-glow {
+  0%, 60% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
+  100%    { box-shadow: var(--shadow); }
+}
+.restored { animation: restored-in .28s cubic-bezier(.2, .8, .3, 1), restored-glow .9s ease-out; }
 
 /* ------------------------------------------------------------------ dialogs */
 
@@ -309,7 +349,14 @@ body {
   width: min(440px, calc(100vw - 32px));
   box-shadow: 0 16px 40px rgba(9, 30, 66, .28);
 }
-.dialog::backdrop { background: rgba(9, 30, 66, .45); }
+.dialog::backdrop { background: rgba(9, 30, 66, .45); animation: backdrop-in .18s ease-out; }
+.dialog[open] { animation: dialog-in .2s cubic-bezier(.2, .8, .3, 1); }
+
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(8px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 .dialog h2 { margin: 0 0 14px; font-size: 16px; }
 .dialog-body { margin: 0 0 16px; color: var(--text-muted); }
 
@@ -345,6 +392,89 @@ body {
   border-color: transparent;
 }
 
+/* ------------------------------------------------------------------- toasts */
+
+.toasts {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  pointer-events: none; /* the stack spans wide; only the toasts take clicks */
+}
+
+.toast {
+  position: relative;
+  overflow: hidden;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 100%;
+  padding: 11px 8px 11px 15px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(9, 30, 66, .22);
+
+  animation: toast-in .24s cubic-bezier(.2, .8, .3, 1) both;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(14px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+.toast-leaving {
+  animation: none;
+  opacity: 0;
+  transform: translateY(10px) scale(.97);
+  transition: opacity .2s ease, transform .2s cubic-bezier(.2, .8, .3, 1);
+}
+
+.toast-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toast-action {
+  appearance: none;
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 5px;
+}
+.toast-action:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.toast-action:focus-visible,
+.toast-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.toast-close { flex: 0 0 auto; width: 22px; height: 22px; font-size: 11px; }
+
+/* Countdown to auto-dismiss; paused while the pointer is over the toast. */
+.toast-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  transform-origin: left;
+  background: var(--accent);
+  opacity: .5;
+  animation: toast-countdown linear forwards;
+}
+@keyframes toast-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
 /* -------------------------------------------------------------------- login */
 
 .login-body {
@@ -372,6 +502,19 @@ body {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
+/* ----------------------------------------------------------- reduced motion */
+
+@media (prefers-reduced-motion: reduce) {
+  .restored,
+  .dialog[open],
+  .dialog::backdrop { animation: none; }
+
+  .card,
+  .card-actions,
+  .toast { transition: none; animation: none; }
+  .toast-bar { animation: none; opacity: 0; }
+}
+
 /* ------------------------------------------------------------------- mobile */
 
 @media (max-width: 620px) {
@@ -390,6 +533,9 @@ body {
   }
   .project-header .btn-small { flex: 0 0 auto; white-space: nowrap; }
   .project-header .icon-btn  { flex: 0 0 auto; }
+
+  .toasts { left: 12px; right: 12px; bottom: 12px; width: auto; transform: none; }
+  .toast  { width: 100%; }
 }
 
 /* Drag placeholders (fallback mode) */

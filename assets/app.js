@@ -15,7 +15,17 @@ let board = [];
 
 const boardEl  = document.getElementById('board');
 const statusEl = document.getElementById('status');
+const toastsEl = document.getElementById('toasts');
 const sortables = [];
+
+/** Ids to play the entrance animation for on the next render (restored rows). */
+const entering = { projects: new Set(), columns: new Set(), tasks: new Set() };
+
+const motionOK = () => !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const truncate = (text, max = 40) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /* ----------------------------------------------------------------- status */
 
@@ -73,6 +83,64 @@ async function resync() {
   try { await loadBoard(); } catch { /* status already shows the error */ }
 }
 
+/* ----------------------------------------------------------------- toasts */
+
+const MAX_TOASTS = 3;
+
+/**
+ * Transient message with an optional action. Used for undo after a delete:
+ * the countdown pauses while the pointer is over the toast, so a slow reader
+ * doesn't lose the chance to undo.
+ */
+function showToast(message, { actionLabel, onAction, duration = 8000 } = {}) {
+  while (toastsEl.children.length >= MAX_TOASTS) {
+    toastsEl.firstElementChild.remove();
+  }
+
+  const toast = el('div', 'toast');
+  toast.append(el('span', 'toast-text', message));
+
+  let timer = null;
+  let closed = false;
+
+  const dismiss = () => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(timer);
+    toast.classList.add('toast-leaving');
+    setTimeout(() => toast.remove(), motionOK() ? 220 : 0);
+  };
+
+  if (actionLabel && onAction) {
+    const action = el('button', 'toast-action', actionLabel);
+    action.type = 'button';
+    action.addEventListener('click', () => { dismiss(); onAction(); });
+    toast.append(action);
+  }
+
+  const close = iconButton('Dismiss', '✕', 'toast-close');
+  close.addEventListener('click', dismiss);
+  toast.append(close);
+
+  const bar = el('span', 'toast-bar');
+  bar.style.animationDuration = `${duration}ms`;
+  toast.append(bar);
+
+  toast.addEventListener('pointerenter', () => {
+    clearTimeout(timer);
+    bar.style.animationPlayState = 'paused';
+  });
+  toast.addEventListener('pointerleave', () => {
+    bar.style.animationPlayState = 'running';
+    timer = setTimeout(dismiss, 2500);
+  });
+
+  toastsEl.append(toast);
+  timer = setTimeout(dismiss, duration);
+
+  return dismiss;
+}
+
 /* ---------------------------------------------------------------- dialogs */
 
 const taskDialog    = document.getElementById('task-dialog');
@@ -81,85 +149,99 @@ const confirmDialog = document.getElementById('confirm-dialog');
 const promptDialog  = document.getElementById('prompt-dialog');
 const promptForm    = document.getElementById('prompt-form');
 
-document.addEventListener('click', (event) => {
-  const closer = event.target.closest('[data-close]');
-  if (closer) closer.closest('dialog').close();
-});
-
-function openPrompt({ title, label = 'Title', value = '', ok = 'Save' }) {
+/**
+ * Wrap a <dialog> in a promise.
+ *
+ * Every exit path settles explicitly — button, submit, Escape — rather than
+ * hanging the promise off the `close` event alone. `close` is the obvious hook,
+ * but it is one point of failure (some embedded browsers never dispatch it),
+ * and a dialog that never settles leaves the caller awaiting forever.
+ *
+ * `setup` receives `settle(value)` and an `on()` that unregisters itself.
+ */
+function runDialog(dialog, setup) {
   return new Promise((resolve) => {
-    document.getElementById('prompt-title').textContent = title;
-    document.getElementById('prompt-label').textContent = label;
-    document.getElementById('prompt-ok').textContent    = ok;
+    let done = false;
+    const cleanups = [];
 
-    const input = promptForm.elements.value;
-    input.value = value;
+    const on = (target, type, handler) => {
+      target.addEventListener(type, handler);
+      cleanups.push(() => target.removeEventListener(type, handler));
+    };
 
-    let result = null;
-    const onSubmit = () => { result = input.value.trim(); };
+    const settle = (value) => {
+      if (done) return;
+      done = true;
+      cleanups.forEach((cleanup) => cleanup());
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
 
-    promptForm.addEventListener('submit', onSubmit);
-    promptDialog.addEventListener('close', () => {
-      promptForm.removeEventListener('submit', onSubmit);
-      resolve(result || null);
-    }, { once: true });
+    setup({ settle, on });
 
-    promptDialog.showModal();
-    input.select();
+    on(dialog, 'click', (event) => {
+      if (event.target.closest('[data-close]')) settle(null);
+    });
+    on(dialog, 'cancel', () => settle(null));                                  // Escape
+    on(dialog, 'keydown', (e) => { if (e.key === 'Escape') settle(null); });   // …and a fallback
+    on(dialog, 'close', () => settle(null));                                   // closed elsewhere
+
+    dialog.showModal();
   });
 }
 
-function openConfirm({ title, body, ok = 'Delete' }) {
-  return new Promise((resolve) => {
-    document.getElementById('confirm-title').textContent = title;
-    document.getElementById('confirm-body').textContent  = body;
+/** Resolves to the trimmed string, or null if dismissed. */
+function openPrompt({ title, label = 'Title', value = '', ok = 'Save' }) {
+  document.getElementById('prompt-title').textContent = title;
+  document.getElementById('prompt-label').textContent = label;
+  document.getElementById('prompt-ok').textContent    = ok;
 
-    const okBtn = document.getElementById('confirm-ok');
-    okBtn.textContent = ok;
+  const input = promptForm.elements.value;
+  input.value = value;
 
-    let confirmed = false;
-    const onOk = () => { confirmed = true; confirmDialog.close(); };
-
-    okBtn.addEventListener('click', onOk);
-    confirmDialog.addEventListener('close', () => {
-      okBtn.removeEventListener('click', onOk);
-      resolve(confirmed);
-    }, { once: true });
-
-    confirmDialog.showModal();
+  return runDialog(promptDialog, ({ settle, on }) => {
+    on(promptForm, 'submit', (event) => {
+      event.preventDefault();
+      settle(input.value.trim() || null);
+    });
+    setTimeout(() => input.select(), 0);
   });
+}
+
+/** Resolves true only if the confirming button was pressed. */
+function openConfirm({ title, body, ok = 'Delete' }) {
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-body').textContent  = body;
+
+  const okBtn = document.getElementById('confirm-ok');
+  okBtn.textContent = ok;
+
+  return runDialog(confirmDialog, ({ settle, on }) => {
+    on(okBtn, 'click', () => settle(true));
+  }).then((value) => value === true);
 }
 
 /** Resolves to {type:'save',title,description} | {type:'delete'} | null. */
 function openTask({ heading, title = '', description = '', allowDelete }) {
-  return new Promise((resolve) => {
-    document.getElementById('task-dialog-title').textContent = heading;
-    taskForm.elements.title.value       = title;
-    taskForm.elements.description.value = description;
+  document.getElementById('task-dialog-title').textContent = heading;
+  taskForm.elements.title.value       = title;
+  taskForm.elements.description.value = description;
 
-    const deleteBtn = document.getElementById('task-delete');
-    deleteBtn.hidden = !allowDelete;
+  const deleteBtn = document.getElementById('task-delete');
+  deleteBtn.hidden = !allowDelete;
 
-    let result = null;
-    const onSubmit = () => {
-      result = {
+  return runDialog(taskDialog, ({ settle, on }) => {
+    on(taskForm, 'submit', (event) => {
+      event.preventDefault();
+      const nextTitle = taskForm.elements.title.value.trim();
+      settle(nextTitle ? {
         type: 'save',
-        title: taskForm.elements.title.value.trim(),
+        title: nextTitle,
         description: taskForm.elements.description.value.trim(),
-      };
-    };
-    const onDelete = () => { result = { type: 'delete' }; taskDialog.close(); };
-
-    taskForm.addEventListener('submit', onSubmit);
-    deleteBtn.addEventListener('click', onDelete);
-    taskDialog.addEventListener('close', () => {
-      taskForm.removeEventListener('submit', onSubmit);
-      deleteBtn.removeEventListener('click', onDelete);
-      resolve(result && result.type === 'save' && !result.title ? null : result);
-    }, { once: true });
-
-    taskDialog.showModal();
-    taskForm.elements.title.select();
+      } : null);
+    });
+    on(deleteBtn, 'click', () => settle({ type: 'delete' }));
+    setTimeout(() => taskForm.elements.title.select(), 0);
   });
 }
 
@@ -179,6 +261,52 @@ function iconButton(label, glyph, className = '') {
   button.setAttribute('aria-label', label);
   return button;
 }
+
+const COLLAPSE_MS = 240;
+
+/**
+ * Collapse elements away before the board re-renders. Size, padding and a
+ * negative margin animate together so the flex gap closes with them, instead
+ * of the surviving siblings snapping into place.
+ *
+ * Cards and project rows collapse vertically; columns collapse along their
+ * flex-basis, since that is what gives them their width.
+ */
+function collapseOut(elements, { axis = 'height', gap = 8, stagger = 0 } = {}) {
+  if (elements.length === 0 || !motionOK()) return Promise.resolve();
+
+  const horizontal = axis === 'width';
+  const sizeProp = horizontal ? 'flexBasis' : 'height';
+
+  return Promise.all(elements.map((element, index) => new Promise((resolve) => {
+    setTimeout(() => {
+      element.style[sizeProp] = `${horizontal ? element.offsetWidth : element.offsetHeight}px`;
+      element.classList.add('collapsing');
+      void element.offsetHeight; // flush the starting size so the transition has a from-value
+
+      element.style[sizeProp] = '0px';
+      if (horizontal) {
+        element.style.paddingLeft = '0px';
+        element.style.paddingRight = '0px';
+        element.style.marginRight = `-${gap}px`;
+      } else {
+        element.style.paddingTop = '0px';
+        element.style.paddingBottom = '0px';
+        element.style.marginBottom = `-${gap}px`;
+      }
+      element.style.opacity = '0';
+      element.style.transform = 'scale(.94)';
+
+      setTimeout(resolve, COLLAPSE_MS);
+    }, Math.min(index * stagger, 200));
+  })));
+}
+
+const cardsIn = (root) => (root ? Array.from(root.querySelectorAll('.task-list > .card')) : []);
+
+const cardElement    = (id) => boardEl.querySelector(`.card[data-task-id="${id}"]`);
+const columnElement  = (id) => boardEl.querySelector(`.column[data-column-id="${id}"]`);
+const projectElement = (id) => boardEl.querySelector(`.project[data-project-id="${id}"]`);
 
 /* ------------------------------------------------------------------ render */
 
@@ -214,6 +342,7 @@ function render() {
 function renderProject(project) {
   const row = el('section', 'project');
   row.dataset.projectId = String(project.id);
+  if (entering.projects.has(project.id)) row.classList.add('restored');
 
   const header = el('header', 'project-header');
   const grip   = el('span', 'project-grip', '⠿');
@@ -260,6 +389,7 @@ function renderProject(project) {
 function renderColumn(project, column) {
   const node = el('div', 'column');
   node.dataset.columnId = String(column.id);
+  if (entering.columns.has(column.id)) node.classList.add('restored');
 
   const header = el('header', 'column-header');
   const grip   = el('span', 'column-grip', '⠿');
@@ -276,7 +406,16 @@ function renderColumn(project, column) {
   const remove = iconButton('Delete column', '🗑', 'danger');
   remove.addEventListener('click', () => deleteColumn(project, column));
 
-  header.append(grip, title, count, el('span', 'spacer'), rename, remove);
+  header.append(grip, title, count, el('span', 'spacer'));
+
+  // Only worth showing when there is something to clear.
+  if (column.tasks.length > 0) {
+    const clear = iconButton(`Clear all ${plural(column.tasks.length, 'card')}`, '🧹');
+    clear.addEventListener('click', () => clearColumn(project, column));
+    header.append(clear);
+  }
+
+  header.append(rename, remove);
 
   const list = el('div', 'task-list');
   list.dataset.columnId = String(column.id);
@@ -312,15 +451,29 @@ function renderTask(project, column, task) {
     card.append(el('p', 'card-desc', task.description));
   }
 
-  const open = () => editTask(project, column, task);
+  const open   = () => editTask(project, column, task);
+  const remove = () => deleteTask(project, column, task);
+
   card.addEventListener('dblclick', open);
   card.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); open(); }
+    if (event.key === 'Enter')  { event.preventDefault(); open(); }
+    if (event.key === 'Delete') { event.preventDefault(); remove(); }
   });
 
-  const edit = iconButton('Edit task', '✎', 'card-edit');
+  const actions = el('div', 'card-actions');
+
+  const edit = iconButton('Edit task', '✎');
   edit.addEventListener('click', open);
-  card.append(edit);
+
+  const del = iconButton('Delete task', '🗑', 'danger');
+  del.addEventListener('click', remove);
+
+  actions.append(edit, del);
+  card.append(actions);
+
+  if (entering.tasks.has(task.id)) {
+    card.classList.add('restored');
+  }
 
   return card;
 }
@@ -457,15 +610,31 @@ async function renameProject(project) {
 }
 
 async function deleteProject(project) {
+  const columns = project.columns.length;
+  const cards = project.columns.reduce((total, column) => total + column.tasks.length, 0);
+
   const ok = await openConfirm({
-    title: `Delete “${project.title}”?`,
-    body: 'Its columns and every task on this board will be deleted. This cannot be undone.',
+    title: `Delete “${truncate(project.title, 40)}”?`,
+    body: `The board and its ${plural(columns, 'column')} and ${plural(cards, 'card')} `
+        + 'will be removed. You can undo it from the toast.',
   });
   if (!ok) return;
+
+  const row = projectElement(project.id);
+
   try {
-    await apiPost('project.delete', { id: project.id });
+    const [data] = await Promise.all([
+      apiPost('project.delete', { id: project.id }),
+      collapseOut(row ? [row] : [], { gap: 18 }),
+    ]);
+
     board = board.filter((p) => p.id !== project.id);
     render();
+
+    showToast(`Deleted board “${truncate(project.title, 24)}”`, {
+      actionLabel: 'Undo',
+      onAction: () => restoreSnapshot(data.snapshot),
+    });
   } catch {
     await resync();
   }
@@ -496,17 +665,31 @@ async function renameColumn(project, column) {
 }
 
 async function deleteColumn(project, column) {
+  const total = column.tasks.length;
+
   const ok = await openConfirm({
-    title: `Delete “${column.title}”?`,
-    body: column.tasks.length
-      ? `${column.tasks.length} task(s) in this column will be deleted too.`
-      : 'This column is empty.',
+    title: `Delete “${truncate(column.title, 32)}”?`,
+    body: total
+      ? `The column and its ${plural(total, 'card')} will be removed. You can undo it from the toast.`
+      : 'The empty column will be removed. You can undo it from the toast.',
   });
   if (!ok) return;
+
+  const columnEl = columnElement(column.id);
+
   try {
-    await apiPost('column.delete', { id: column.id });
+    const [data] = await Promise.all([
+      apiPost('column.delete', { id: column.id }),
+      collapseOut(columnEl ? [columnEl] : [], { axis: 'width', gap: 12 }),
+    ]);
+
     project.columns = project.columns.filter((c) => c.id !== column.id);
     render();
+
+    showToast(`Deleted column “${truncate(column.title, 24)}”`, {
+      actionLabel: 'Undo',
+      onAction: () => restoreSnapshot(data.snapshot),
+    });
   } catch {
     await resync();
   }
@@ -542,25 +725,116 @@ async function editTask(project, column, task) {
   });
   if (!result) return;
 
+  if (result.type === 'delete') {
+    await deleteTask(project, column, task);
+    return;
+  }
+
   try {
-    if (result.type === 'delete') {
-      const ok = await openConfirm({
-        title: `Delete “${task.title}”?`,
-        body: 'This task will be removed from the board.',
-      });
-      if (!ok) return;
-      await apiPost('task.delete', { id: task.id });
-      column.tasks = column.tasks.filter((t) => t.id !== task.id);
-    } else {
-      await apiPost('task.update', {
-        id: task.id,
-        title: result.title,
-        description: result.description,
-      });
-      task.title = result.title;
-      task.description = result.description;
-    }
+    await apiPost('task.update', {
+      id: task.id,
+      title: result.title,
+      description: result.description,
+    });
+    task.title = result.title;
+    task.description = result.description;
     render();
+  } catch {
+    await resync();
+  }
+}
+
+async function deleteTask(project, column, task) {
+  const ok = await openConfirm({
+    title: `Delete “${truncate(task.title, 48)}”?`,
+    body: 'The card is removed from this column. You can undo it from the toast.',
+  });
+  if (!ok) return;
+
+  const card = cardElement(task.id);
+
+  try {
+    // The request and the collapse animation overlap, so the card is gone by
+    // the time the write lands. The server returns the row it deleted, which
+    // is what Undo posts back.
+    const [data] = await Promise.all([
+      apiPost('task.delete', { id: task.id }),
+      collapseOut(card ? [card] : []),
+    ]);
+
+    column.tasks = column.tasks.filter((t) => t.id !== task.id);
+    render();
+
+    showToast(`Deleted “${truncate(task.title)}”`, {
+      actionLabel: 'Undo',
+      onAction: () => restoreSnapshot(data.snapshot),
+    });
+  } catch {
+    await resync();
+  }
+}
+
+async function clearColumn(project, column) {
+  const total = column.tasks.length;
+  if (total === 0) return;
+
+  const ok = await openConfirm({
+    title: `Clear “${truncate(column.title, 32)}”?`,
+    body: `All ${plural(total, 'card')} in this column will be removed. You can undo it from the toast.`,
+    ok: `Clear ${plural(total, 'card')}`,
+  });
+  if (!ok) return;
+
+  const cards = cardsIn(columnElement(column.id));
+
+  try {
+    const [data] = await Promise.all([
+      apiPost('column.clear', { column_id: column.id }),
+      collapseOut(cards, { stagger: 45 }),
+    ]);
+
+    column.tasks = [];
+    render();
+
+    showToast(`Cleared ${plural(data.snapshot.tasks.length, 'card')} from “${truncate(column.title, 24)}”`, {
+      actionLabel: 'Undo',
+      onAction: () => restoreSnapshot(data.snapshot),
+    });
+  } catch {
+    await resync();
+  }
+}
+
+/** Plain-English summary of what a snapshot holds: "1 column, 3 cards". */
+function describeSnapshot(snapshot) {
+  return [
+    [snapshot.projects, 'project'],
+    [snapshot.columns, 'column'],
+    [snapshot.tasks, 'card'],
+  ]
+    .filter(([rows]) => rows && rows.length > 0)
+    .map(([rows, noun]) => plural(rows.length, noun))
+    .join(', ');
+}
+
+/** Put deleted rows back with their original ids and positions. */
+async function restoreSnapshot(snapshot) {
+  try {
+    const data = await apiPost('restore', { snapshot });
+    board = data.projects;
+
+    (snapshot.projects || []).forEach((row) => entering.projects.add(row.id));
+    (snapshot.columns  || []).forEach((row) => entering.columns.add(row.id));
+    (snapshot.tasks    || []).forEach((row) => entering.tasks.add(row.id));
+
+    render();
+    setTimeout(() => {
+      entering.projects.clear();
+      entering.columns.clear();
+      entering.tasks.clear();
+    }, 700);
+
+    setStatus(`Restored ${describeSnapshot(snapshot)}`);
   } catch {
     await resync();
   }

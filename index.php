@@ -36,6 +36,10 @@ require_auth();
   <p class="board-loading">Loading board…</p>
 </main>
 
+<!-- Undo toasts. The container ignores pointer events so it can span the
+     viewport without swallowing clicks on the board underneath. -->
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
 <!-- Task editor -->
 <dialog id="task-dialog" class="dialog">
   <form method="dialog" id="task-form">

@@ -72,15 +72,17 @@ session CSRF token in an `X-CSRF-Token` header.
 |-------------------|---------------------------------------------------------------|
 | `project.create`  | `title` — also creates To Do / In Progress / Done             |
 | `project.rename`  | `id`, `title`                                                  |
-| `project.delete`  | `id`                                                           |
+| `project.delete`  | `id` — returns a snapshot of everything removed, for undo       |
 | `project.reorder` | `ids` — full ordered list                                      |
 | `column.create`   | `project_id`, `title`                                          |
 | `column.rename`   | `id`, `title`                                                  |
-| `column.delete`   | `id`                                                           |
+| `column.delete`   | `id` — returns a snapshot of everything removed, for undo       |
 | `column.reorder`  | `project_id`, `ids`                                            |
+| `column.clear`    | `column_id` — returns a snapshot of the removed cards           |
 | `task.create`     | `column_id`, `title`, `description`                            |
 | `task.update`     | `id`, `title`, `description`                                   |
-| `task.delete`     | `id`                                                           |
+| `task.delete`     | `id` — returns a snapshot of the removed card                   |
+| `restore`         | `snapshot` — writes a delete's snapshot back                    |
 | `task.reorder`    | `lists: [{column_id, task_ids}]` — one entry per touched column |
 
 Errors come back as `{"ok": false, "error": "…"}` with a 4xx status.
@@ -88,6 +90,30 @@ Errors come back as `{"ok": false, "error": "…"}` with a 4xx status.
 `task.reorder` is what a drag writes: it carries the final order of every
 column the drag touched, so a move between columns and a reorder within one are
 the same call, applied in a single transaction.
+
+Every delete is undoable, at all three levels. Each one returns a **snapshot**
+of the rows it removed:
+
+```json
+{ "ok": true,
+  "snapshot": {
+    "projects": [ { "id": 2, "title": "…", "sort_order": 1 } ],
+    "columns":  [ { "id": 5, "project_id": 2, "title": "…", "sort_order": 0 } ],
+    "tasks":    [ { "id": 9, "column_id": 5, "title": "…", "description": "", "sort_order": 0 } ]
+  } }
+```
+
+The undo toast holds that snapshot and hands it straight back to `restore`,
+which writes the rows in parent-first order with their original ids and
+`sort_order` — so a restored card, column or whole board lands exactly where it
+was, not appended to the end.
+
+Projects and columns are inserted with `INSERT OR IGNORE`, not `OR REPLACE`:
+REPLACE deletes the existing row first, and on a parent row that would cascade
+away the very children the same call is restoring. Tasks are leaves, so they use
+`OR REPLACE`, which keeps a double-tapped Undo idempotent. Restore fails with
+`409`, writing nothing, if the parent was deleted while the toast was still
+up — undoing a column delete after its board is gone, for instance.
 
 ## Notes
 
@@ -99,7 +125,18 @@ the same call, applied in a single transaction.
 * Drags apply to the DOM first and persist in the background; if the write
   fails, the board re-fetches so the UI can't drift from the database.
 * Double-click a project or column title to rename it; double-click a card (or
-  press Enter on it) to edit.
+  press Enter on it) to edit. Press Delete on a focused card to remove it.
+* Cards have edit and delete buttons on hover; each column with cards gets a
+  broom to clear it in one go. Every delete — card, cleared column, column, or
+  whole board — confirms first, then shows an undo toast whose countdown pauses
+  while the pointer is over it.
+* Deleted things collapse before the board re-renders: cards and project rows
+  shrink by height, columns by flex-basis, each with a negative margin so the
+  gap closes with them. Restored ones fade in with a brief accent glow.
+* Every dialog settles on each exit path (button, submit, Escape) rather than
+  relying on the `<dialog>` `close` event, which some embedded browsers never
+  dispatch.
+* Animations respect `prefers-reduced-motion`.
 
 ## Deploying
 

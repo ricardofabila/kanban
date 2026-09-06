@@ -129,6 +129,61 @@ function load_board(PDO $pdo): array
     }, $projects);
 }
 
+/**
+ * Row mappers for undo snapshots. A delete returns every row it removed, in
+ * full, so `restore` can put them back exactly where they were.
+ */
+function project_row(array $row): array
+{
+    return [
+        'id'         => (int) $row['id'],
+        'title'      => $row['title'],
+        'sort_order' => (int) $row['sort_order'],
+    ];
+}
+
+function column_row(array $row): array
+{
+    return [
+        'id'         => (int) $row['id'],
+        'project_id' => (int) $row['project_id'],
+        'title'      => $row['title'],
+        'sort_order' => (int) $row['sort_order'],
+    ];
+}
+
+/** A complete task row, including sort_order — what an undo needs to put it back. */
+function task_row(array $row): array
+{
+    return [
+        'id'          => (int) $row['id'],
+        'column_id'   => (int) $row['column_id'],
+        'title'       => $row['title'],
+        'description' => $row['description'],
+        'sort_order'  => (int) $row['sort_order'],
+    ];
+}
+
+/**
+ * Shared id/title/sort_order validation for a row being restored.
+ * `$bail` rolls the transaction back and fails the request.
+ */
+function restore_fields(mixed $row, int $maxTitle, callable $bail): array
+{
+    if (!is_array($row)) {
+        $bail('Each row to restore must be an object.');
+    }
+
+    $id    = (int) ($row['id'] ?? 0);
+    $title = is_string($row['title'] ?? null) ? trim($row['title']) : '';
+
+    if ($id <= 0 || $title === '') {
+        $bail('A row to restore is missing its id or title.');
+    }
+
+    return [$id, mb_substr($title, 0, $maxTitle), max(0, (int) ($row['sort_order'] ?? 0))];
+}
+
 /** Next sort_order for a new row at the end of a list. */
 function next_order(PDO $pdo, string $table, ?string $parentColumn = null, ?int $parentId = null): int
 {
@@ -197,9 +252,38 @@ switch ($action) {
     }
 
     case 'project.delete': {
-        $stmt = $pdo->prepare('DELETE FROM projects WHERE id = ?');
-        $stmt->execute([id_field('id')]);
-        respond(['ok' => true]);
+        $id = id_field('id');
+
+        $stmt = $pdo->prepare('SELECT id, title, sort_order FROM projects WHERE id = ?');
+        $stmt->execute([$id]);
+        $project = $stmt->fetch();
+        if ($project === false) {
+            fail('That project no longer exists.', 404);
+        }
+
+        $stmt = $pdo->prepare(
+            'SELECT id, project_id, title, sort_order
+             FROM columns WHERE project_id = ? ORDER BY sort_order, id'
+        );
+        $stmt->execute([$id]);
+        $columns = $stmt->fetchAll();
+
+        $stmt = $pdo->prepare(
+            'SELECT t.id, t.column_id, t.title, t.description, t.sort_order
+             FROM tasks t JOIN columns c ON c.id = t.column_id
+             WHERE c.project_id = ? ORDER BY t.column_id, t.sort_order, t.id'
+        );
+        $stmt->execute([$id]);
+        $tasks = $stmt->fetchAll();
+
+        // The cascade takes the columns and tasks with it.
+        $pdo->prepare('DELETE FROM projects WHERE id = ?')->execute([$id]);
+
+        respond(['ok' => true, 'snapshot' => [
+            'projects' => [project_row($project)],
+            'columns'  => array_map('column_row', $columns),
+            'tasks'    => array_map('task_row', $tasks),
+        ]]);
     }
 
     case 'project.reorder': {
@@ -236,9 +320,28 @@ switch ($action) {
     }
 
     case 'column.delete': {
-        $stmt = $pdo->prepare('DELETE FROM columns WHERE id = ?');
-        $stmt->execute([id_field('id')]);
-        respond(['ok' => true]);
+        $id = id_field('id');
+
+        $stmt = $pdo->prepare('SELECT id, project_id, title, sort_order FROM columns WHERE id = ?');
+        $stmt->execute([$id]);
+        $column = $stmt->fetch();
+        if ($column === false) {
+            fail('That column no longer exists.', 404);
+        }
+
+        $stmt = $pdo->prepare(
+            'SELECT id, column_id, title, description, sort_order
+             FROM tasks WHERE column_id = ? ORDER BY sort_order, id'
+        );
+        $stmt->execute([$id]);
+        $tasks = $stmt->fetchAll();
+
+        $pdo->prepare('DELETE FROM columns WHERE id = ?')->execute([$id]);
+
+        respond(['ok' => true, 'snapshot' => [
+            'columns' => [column_row($column)],
+            'tasks'   => array_map('task_row', $tasks),
+        ]]);
     }
 
     case 'column.reorder': {
@@ -252,6 +355,23 @@ switch ($action) {
         }
         $pdo->commit();
         respond(['ok' => true]);
+    }
+
+    /** Empty a column in one go, returning the removed rows so the UI can offer undo. */
+    case 'column.clear': {
+        $columnId = id_field('column_id');
+        if (!row_exists($pdo, 'columns', $columnId)) {
+            fail('That column no longer exists.', 404);
+        }
+        $stmt = $pdo->prepare(
+            'SELECT id, column_id, title, description, sort_order
+             FROM tasks WHERE column_id = ? ORDER BY sort_order, id'
+        );
+        $stmt->execute([$columnId]);
+        $removed = array_map('task_row', $stmt->fetchAll());
+
+        $pdo->prepare('DELETE FROM tasks WHERE column_id = ?')->execute([$columnId]);
+        respond(['ok' => true, 'snapshot' => ['tasks' => $removed]]);
     }
 
     /* --------------------------------------------------------------- tasks */
@@ -284,9 +404,94 @@ switch ($action) {
     }
 
     case 'task.delete': {
-        $stmt = $pdo->prepare('DELETE FROM tasks WHERE id = ?');
-        $stmt->execute([id_field('id')]);
-        respond(['ok' => true]);
+        $id   = id_field('id');
+        $stmt = $pdo->prepare(
+            'SELECT id, column_id, title, description, sort_order FROM tasks WHERE id = ?'
+        );
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        if ($row === false) {
+            fail('That task no longer exists.', 404);
+        }
+
+        $pdo->prepare('DELETE FROM tasks WHERE id = ?')->execute([$id]);
+        respond(['ok' => true, 'snapshot' => ['tasks' => [task_row($row)]]]);
+    }
+
+    /* ------------------------------------------------------------ undo */
+
+    /**
+     * Undo any delete. Takes the snapshot the delete returned and writes those
+     * rows back with their original ids and sort_order, so restored items land
+     * exactly where they were.
+     *
+     * Parents go in before children so each child's existence check can see
+     * them. Projects and columns use OR IGNORE rather than OR REPLACE: REPLACE
+     * deletes the old row first, and on a parent that would cascade away the
+     * children this same call is restoring. Tasks are leaves, so REPLACE is
+     * safe there and keeps a double-tapped Undo idempotent.
+     */
+    case 'restore': {
+        $snapshot = body()['snapshot'] ?? null;
+        if (!is_array($snapshot)) {
+            fail("Field 'snapshot' must be an object.");
+        }
+
+        $projects = is_array($snapshot['projects'] ?? null) ? $snapshot['projects'] : [];
+        $columns  = is_array($snapshot['columns']  ?? null) ? $snapshot['columns']  : [];
+        $tasks    = is_array($snapshot['tasks']    ?? null) ? $snapshot['tasks']    : [];
+
+        if ($projects === [] && $columns === [] && $tasks === []) {
+            fail('There is nothing to restore.');
+        }
+
+        $insProject = $pdo->prepare(
+            'INSERT OR IGNORE INTO projects (id, title, sort_order) VALUES (?, ?, ?)'
+        );
+        $insColumn = $pdo->prepare(
+            'INSERT OR IGNORE INTO columns (id, project_id, title, sort_order) VALUES (?, ?, ?, ?)'
+        );
+        $insTask = $pdo->prepare(
+            'INSERT OR REPLACE INTO tasks (id, column_id, title, description, sort_order)
+             VALUES (?, ?, ?, ?, ?)'
+        );
+
+        $bail = function (string $message, int $status = 400) use ($pdo): never {
+            $pdo->rollBack();
+            fail($message, $status);
+        };
+
+        $pdo->beginTransaction();
+
+        foreach ($projects as $row) {
+            [$id, $title, $order] = restore_fields($row, 120, $bail);
+            $insProject->execute([$id, $title, $order]);
+        }
+
+        foreach ($columns as $row) {
+            [$id, $title, $order] = restore_fields($row, 80, $bail);
+            $projectId = (int) ($row['project_id'] ?? 0);
+            if ($projectId <= 0 || !row_exists($pdo, 'projects', $projectId)) {
+                $bail('The project these columns belonged to no longer exists.', 409);
+            }
+            $insColumn->execute([$id, $projectId, $title, $order]);
+        }
+
+        foreach ($tasks as $row) {
+            [$id, $title, $order] = restore_fields($row, 200, $bail);
+            $columnId = (int) ($row['column_id'] ?? 0);
+            if ($columnId <= 0 || !row_exists($pdo, 'columns', $columnId)) {
+                $bail('The column these cards belonged to no longer exists.', 409);
+            }
+            $description = is_string($row['description'] ?? null)
+                ? mb_substr($row['description'], 0, 4000)
+                : '';
+            $insTask->execute([$id, $columnId, $title, $description, $order]);
+        }
+
+        $pdo->commit();
+
+        respond(['ok' => true, 'projects' => load_board($pdo)]);
     }
 
     /**
