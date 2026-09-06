@@ -23,17 +23,52 @@ To reset everything — password included — delete `data/database.sqlite`.
 
 ```
 .
-├── index.php        Single-page dashboard shell (auth-gated)
-├── login.php        First-run password setup + sign-in
-├── logout.php       Destroys the session
-├── api.php          JSON API: GET returns the board, POST performs all writes
-├── config.php       Session bootstrap, PDO connection, schema, seed data
+├── index.php         Single-page dashboard shell (auth-gated)
+├── backups.php       Backups page: snapshot, restore, prune
+├── backup-store.php  The backups folder and the operations against it
+├── login.php         First-run password setup + sign-in
+├── logout.php        Destroys the session
+├── api.php           JSON API: GET returns the board, POST performs all writes
+├── config.php        Session bootstrap, PDO connection, schema, seed data
 ├── assets/
-│   ├── app.js       Rendering, dialogs, SortableJS wiring, fetch calls
-│   └── styles.css   All styling, light + dark
+│   ├── app.js        Board: rendering, dialogs, SortableJS, fetch calls
+│   ├── backups.js    Backups page: confirmations, local timestamps
+│   └── styles.css    All styling, light + dark
 └── data/
-    └── database.sqlite   Created on first run (gitignored)
+    ├── database.sqlite   Created on first run (gitignored)
+    └── backups/          Backup snapshots (gitignored)
 ```
+
+## Backups
+
+The **Backups** link in the top bar opens a page listing every snapshot, newest
+first, with buttons to take one, restore from one, or delete one.
+
+Each backup is an ordinary, self-contained SQLite file in `data/backups/`. You
+can copy one out and open it with any SQLite tool, and restoring is a plain file
+copy back over the live database.
+
+Snapshots are written with `VACUUM INTO` rather than `copy()`. The database runs
+in WAL mode, so recent commits live in `database.sqlite-wal` and a copy of the
+main file alone can silently miss them — in testing, a naive `copy()` of a
+freshly seeded database produced a file with **no tables in it at all**, because
+the entire schema was still in the WAL. `VACUUM INTO` writes one consistent,
+compacted file in a single statement.
+
+Restoring:
+
+* verifies the file first — it must pass `PRAGMA quick_check` and contain the
+  `projects`, `columns` and `tasks` tables;
+* takes a `pre-restore-*` snapshot of the database it is about to replace, so
+  the restore is itself undoable;
+* deletes the stale `-wal` / `-shm` sidecars, which belong to the file being
+  replaced and would otherwise be replayed against the restored one;
+* keeps your **current password**, rather than the one in the backup — restoring
+  an old board should not lock you out.
+
+Backup names are always bare filenames inside `data/backups/`; anything with a
+path separator, a leading dot, or the wrong extension is rejected before it
+reaches the filesystem.
 
 ## Schema
 
@@ -141,5 +176,10 @@ up — undoing a column delete after its board is gone, for instance.
 ## Deploying
 
 Serve the folder with Apache/nginx + PHP-FPM and put `data/` outside the web
-root, or block it — `data/database.sqlite` must not be publicly fetchable. Run
-it over HTTPS so the session cookie gets the `secure` flag.
+root, or block it — neither `data/database.sqlite` nor anything in
+`data/backups/` must be publicly fetchable. Run it over HTTPS so the session
+cookie gets the `secure` flag.
+
+`data/backups/` grows until you prune it; the page lists sizes so you can see
+what it is costing. Backups sit on the same disk as the database, so they cover
+mistakes rather than hardware failure — copy the folder elsewhere for that.

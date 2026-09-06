@@ -4,4 +4,7 @@
 /data/*.sqlite-wal
 /data/*.sqlite-shm
 
+# Backup snapshots are database copies — same reason
+/data/backups/
+
 .DS_Store

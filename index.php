@@ -28,6 +28,7 @@ require_auth();
   </div>
   <div class="topbar-right">
     <button type="button" class="btn" id="add-project">New project</button>
+    <a class="btn btn-quiet" href="backups.php">Backups</a>
     <a class="btn btn-quiet" href="logout.php">Sign out</a>
   </div>
 </header>

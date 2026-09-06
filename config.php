@@ -23,13 +23,28 @@ if (empty($_SESSION['csrf'])) {
 
 /* --------------------------------------------------------------- database */
 
-function db(): PDO
+/**
+ * Holder for the shared connection. A plain function-static would do, except
+ * that restoring a backup has to drop the handle before replacing the file
+ * underneath it — and a static local cannot be reset from outside.
+ */
+final class Database
 {
-    static $pdo = null;
-    if ($pdo instanceof PDO) {
-        return $pdo;
+    private static ?PDO $pdo = null;
+
+    public static function connection(): PDO
+    {
+        return self::$pdo ??= self::connect();
     }
 
+    /** Drop the handle. Required before replacing the database file on disk. */
+    public static function disconnect(): void
+    {
+        self::$pdo = null;
+    }
+
+    private static function connect(): PDO
+    {
     $dir = dirname(DB_PATH);
     if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
         throw new RuntimeException('Unable to create data directory: ' . $dir);
@@ -52,6 +67,17 @@ function db(): PDO
     }
 
     return $pdo;
+    }
+}
+
+function db(): PDO
+{
+    return Database::connection();
+}
+
+function db_close(): void
+{
+    Database::disconnect();
 }
 
 /** Create tables if they do not exist yet. Safe to run on every request. */
@@ -192,6 +218,21 @@ function csrf_token(): string
 function csrf_valid(?string $token): bool
 {
     return is_string($token) && hash_equals($_SESSION['csrf'], $token);
+}
+
+/* ------------------------------------------------------------------ flash */
+
+function flash_set(string $tone, string $message): void
+{
+    $_SESSION['flash'] = ['tone' => $tone, 'message' => $message];
+}
+
+/** Read and clear the pending flash message, if any. */
+function flash_take(): ?array
+{
+    $flash = $_SESSION['flash'] ?? null;
+    unset($_SESSION['flash']);
+    return is_array($flash) ? $flash : null;
 }
 
 function h(?string $value): string
