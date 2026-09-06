@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/config.php';
+require __DIR__ . '/board.php';
 
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
@@ -83,52 +84,6 @@ function id_list(mixed $raw, string $label): array
 
 /* ------------------------------------------------------------ board state */
 
-/** The whole board as nested projects → columns → tasks. */
-function load_board(PDO $pdo): array
-{
-    $projects = $pdo->query(
-        'SELECT id, title, sort_order FROM projects ORDER BY sort_order, id'
-    )->fetchAll();
-
-    $columns = $pdo->query(
-        'SELECT id, project_id, title, sort_order FROM columns ORDER BY sort_order, id'
-    )->fetchAll();
-
-    $tasks = $pdo->query(
-        'SELECT id, column_id, title, description, sort_order FROM tasks ORDER BY sort_order, id'
-    )->fetchAll();
-
-    $tasksByColumn = [];
-    foreach ($tasks as $task) {
-        $tasksByColumn[(int) $task['column_id']][] = [
-            'id'          => (int) $task['id'],
-            'column_id'   => (int) $task['column_id'],
-            'title'       => $task['title'],
-            'description' => $task['description'],
-        ];
-    }
-
-    $columnsByProject = [];
-    foreach ($columns as $column) {
-        $id = (int) $column['id'];
-        $columnsByProject[(int) $column['project_id']][] = [
-            'id'         => $id,
-            'project_id' => (int) $column['project_id'],
-            'title'      => $column['title'],
-            'tasks'      => $tasksByColumn[$id] ?? [],
-        ];
-    }
-
-    return array_map(static function (array $project) use ($columnsByProject): array {
-        $id = (int) $project['id'];
-        return [
-            'id'      => $id,
-            'title'   => $project['title'],
-            'columns' => $columnsByProject[$id] ?? [],
-        ];
-    }, $projects);
-}
-
 /**
  * Row mappers for undo snapshots. A delete returns every row it removed, in
  * full, so `restore` can put them back exactly where they were.
@@ -136,9 +91,10 @@ function load_board(PDO $pdo): array
 function project_row(array $row): array
 {
     return [
-        'id'         => (int) $row['id'],
-        'title'      => $row['title'],
-        'sort_order' => (int) $row['sort_order'],
+        'id'          => (int) $row['id'],
+        'title'       => $row['title'],
+        'description' => $row['description'],
+        'sort_order'  => (int) $row['sort_order'],
     ];
 }
 
@@ -233,8 +189,10 @@ switch ($action) {
 
     case 'project.create': {
         $title = str_field('title', 120);
-        $stmt  = $pdo->prepare('INSERT INTO projects (title, sort_order) VALUES (?, ?)');
-        $stmt->execute([$title, next_order($pdo, 'projects')]);
+        $stmt  = $pdo->prepare(
+            'INSERT INTO projects (title, description, sort_order) VALUES (?, ?, ?)'
+        );
+        $stmt->execute([$title, str_field('description', 2000, false), next_order($pdo, 'projects')]);
         $id = (int) $pdo->lastInsertId();
 
         // A board with no columns cannot hold anything — start with the usual three.
@@ -245,16 +203,20 @@ switch ($action) {
         respond(['ok' => true, 'id' => $id, 'projects' => load_board($pdo)]);
     }
 
-    case 'project.rename': {
-        $stmt = $pdo->prepare('UPDATE projects SET title = ? WHERE id = ?');
-        $stmt->execute([str_field('title', 120), id_field('id')]);
+    case 'project.update': {
+        $stmt = $pdo->prepare('UPDATE projects SET title = ?, description = ? WHERE id = ?');
+        $stmt->execute([
+            str_field('title', 120),
+            str_field('description', 2000, false),
+            id_field('id'),
+        ]);
         respond(['ok' => true]);
     }
 
     case 'project.delete': {
         $id = id_field('id');
 
-        $stmt = $pdo->prepare('SELECT id, title, sort_order FROM projects WHERE id = ?');
+        $stmt = $pdo->prepare('SELECT id, title, description, sort_order FROM projects WHERE id = ?');
         $stmt->execute([$id]);
         $project = $stmt->fetch();
         if ($project === false) {
@@ -446,7 +408,7 @@ switch ($action) {
         }
 
         $insProject = $pdo->prepare(
-            'INSERT OR IGNORE INTO projects (id, title, sort_order) VALUES (?, ?, ?)'
+            'INSERT OR IGNORE INTO projects (id, title, description, sort_order) VALUES (?, ?, ?, ?)'
         );
         $insColumn = $pdo->prepare(
             'INSERT OR IGNORE INTO columns (id, project_id, title, sort_order) VALUES (?, ?, ?, ?)'
@@ -465,7 +427,10 @@ switch ($action) {
 
         foreach ($projects as $row) {
             [$id, $title, $order] = restore_fields($row, 120, $bail);
-            $insProject->execute([$id, $title, $order]);
+            $description = is_string($row['description'] ?? null)
+                ? mb_substr($row['description'], 0, 2000)
+                : '';
+            $insProject->execute([$id, $title, $description, $order]);
         }
 
         foreach ($columns as $row) {

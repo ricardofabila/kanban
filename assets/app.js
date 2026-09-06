@@ -148,6 +148,8 @@ const taskForm      = document.getElementById('task-form');
 const confirmDialog = document.getElementById('confirm-dialog');
 const promptDialog  = document.getElementById('prompt-dialog');
 const promptForm    = document.getElementById('prompt-form');
+const projectDialog = document.getElementById('project-dialog');
+const projectForm   = document.getElementById('project-form');
 
 /**
  * Wrap a <dialog> in a promise.
@@ -219,6 +221,26 @@ function openConfirm({ title, body, ok = 'Delete' }) {
   return runDialog(confirmDialog, ({ settle, on }) => {
     on(okBtn, 'click', () => settle(true));
   }).then((value) => value === true);
+}
+
+/** Resolves to {title, description}, or null if dismissed. */
+function openProject({ heading, title = '', description = '', ok = 'Save' }) {
+  document.getElementById('project-dialog-title').textContent = heading;
+  document.getElementById('project-save').textContent = ok;
+  projectForm.elements.title.value       = title;
+  projectForm.elements.description.value = description;
+
+  return runDialog(projectDialog, ({ settle, on }) => {
+    on(projectForm, 'submit', (event) => {
+      event.preventDefault();
+      const nextTitle = projectForm.elements.title.value.trim();
+      settle(nextTitle ? {
+        title: nextTitle,
+        description: projectForm.elements.description.value.trim(),
+      } : null);
+    });
+    setTimeout(() => projectForm.elements.title.select(), 0);
+  });
 }
 
 /** Resolves to {type:'save',title,description} | {type:'delete'} | null. */
@@ -356,13 +378,16 @@ function renderProject(project) {
   addColumn.type = 'button';
   addColumn.addEventListener('click', () => addColumnTo(project));
 
-  const rename = iconButton('Rename project', '✎');
-  rename.addEventListener('click', () => renameProject(project));
+  const rename = iconButton('Edit project name and purpose', '✎');
+  rename.addEventListener('click', () => editProject(project));
 
   const remove = iconButton('Delete project', '🗑', 'danger');
   remove.addEventListener('click', () => deleteProject(project));
 
-  title.addEventListener('dblclick', () => renameProject(project));
+  title.addEventListener('dblclick', () => editProject(project));
+  if (project.description) {
+    title.title = project.description;
+  }
 
   header.append(grip, title, meta, el('span', 'spacer'), addColumn, rename, remove);
 
@@ -586,10 +611,11 @@ function syncStateFromDom() {
 /* -------------------------------------------------------------- mutations */
 
 async function addProject() {
-  const title = await openPrompt({ title: 'New project', label: 'Project name', ok: 'Create' });
-  if (!title) return;
+  const result = await openProject({ heading: 'New project', ok: 'Create' });
+  if (!result) return;
+
   try {
-    const data = await apiPost('project.create', { title });
+    const data = await apiPost('project.create', result);
     board = data.projects;
     render();
   } catch {
@@ -597,12 +623,19 @@ async function addProject() {
   }
 }
 
-async function renameProject(project) {
-  const title = await openPrompt({ title: 'Rename project', label: 'Project name', value: project.title });
-  if (!title || title === project.title) return;
+async function editProject(project) {
+  const result = await openProject({
+    heading: 'Edit project',
+    title: project.title,
+    description: project.description || '',
+  });
+  if (!result) return;
+  if (result.title === project.title && result.description === (project.description || '')) return;
+
   try {
-    await apiPost('project.rename', { id: project.id, title });
-    project.title = title;
+    await apiPost('project.update', { id: project.id, ...result });
+    project.title = result.title;
+    project.description = result.description;
     render();
   } catch {
     await resync();

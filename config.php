@@ -90,9 +90,10 @@ function init_schema(PDO $pdo): void
         );
 
         CREATE TABLE IF NOT EXISTS projects (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            title      TEXT    NOT NULL,
-            sort_order INTEGER NOT NULL DEFAULT 0
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            title       TEXT    NOT NULL,
+            description TEXT    NOT NULL DEFAULT '',
+            sort_order  INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS columns (
@@ -113,16 +114,49 @@ function init_schema(PDO $pdo): void
         CREATE INDEX IF NOT EXISTS idx_columns_project ON columns(project_id, sort_order);
         CREATE INDEX IF NOT EXISTS idx_tasks_column    ON tasks(column_id, sort_order);
     SQL);
+
+    migrate_schema($pdo);
+}
+
+/**
+ * Bring an older database up to date. CREATE TABLE IF NOT EXISTS leaves an
+ * existing table alone, so columns added after the first release have to be
+ * patched in — including into a database that arrives by restoring an old
+ * backup, since every connection runs this.
+ */
+function migrate_schema(PDO $pdo): void
+{
+    $existing = $pdo->query('PRAGMA table_info(projects)')->fetchAll(PDO::FETCH_COLUMN, 1);
+
+    if (!in_array('description', $existing, true)) {
+        $pdo->exec("ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT ''");
+    }
 }
 
 /** Populate the four starter boards described in the brief. */
 function seed_demo_board(PDO $pdo): void
 {
     $projects = [
-        'SaaS Project'              => ['Backlog', 'In Progress', 'Review', 'Done'],
-        'Woodworking / Plushie Jig' => ['To Do', 'In Progress', 'Done'],
-        'Decluttering'              => ['To Do', 'In Progress', 'Done'],
-        'Japanese Studies'          => ['To Do', 'In Progress', 'Done'],
+        'SaaS Project' => [
+            'columns' => ['Backlog', 'In Progress', 'Review', 'Done'],
+            'description' => 'A side product I want earning enough to cover my own tools and, '
+                . 'eventually, buy back a day a week from contract work.',
+        ],
+        'Woodworking / Plushie Jig' => [
+            'columns' => ['To Do', 'In Progress', 'Done'],
+            'description' => 'Hands-off-the-keyboard time. The jig makes the plushie runs '
+                . 'repeatable so I can make things for people instead of one-off prototypes.',
+        ],
+        'Decluttering' => [
+            'columns' => ['To Do', 'In Progress', 'Done'],
+            'description' => 'Clearing the flat room by room so the space stops draining me '
+                . 'and I can actually use the spare room as a workshop.',
+        ],
+        'Japanese Studies' => [
+            'columns' => ['To Do', 'In Progress', 'Done'],
+            'description' => 'Working towards holding a real conversation on the trip next year. '
+                . 'Consistency matters far more here than intensity.',
+        ],
     ];
 
     $tasks = [
@@ -148,17 +182,19 @@ function seed_demo_board(PDO $pdo): void
         ],
     ];
 
-    $insProject = $pdo->prepare('INSERT INTO projects (title, sort_order) VALUES (?, ?)');
+    $insProject = $pdo->prepare(
+        'INSERT INTO projects (title, description, sort_order) VALUES (?, ?, ?)'
+    );
     $insColumn  = $pdo->prepare('INSERT INTO columns (project_id, title, sort_order) VALUES (?, ?, ?)');
     $insTask    = $pdo->prepare('INSERT INTO tasks (column_id, title, description, sort_order) VALUES (?, ?, ?, ?)');
 
     $pdo->beginTransaction();
     $p = 0;
-    foreach ($projects as $projectTitle => $columnTitles) {
-        $insProject->execute([$projectTitle, $p++]);
+    foreach ($projects as $projectTitle => $spec) {
+        $insProject->execute([$projectTitle, $spec['description'], $p++]);
         $projectId = (int) $pdo->lastInsertId();
 
-        foreach (array_values($columnTitles) as $c => $columnTitle) {
+        foreach (array_values($spec['columns']) as $c => $columnTitle) {
             $insColumn->execute([$projectId, $columnTitle, $c]);
             $columnId = (int) $pdo->lastInsertId();
 
@@ -233,6 +269,12 @@ function flash_take(): ?array
     $flash = $_SESSION['flash'] ?? null;
     unset($_SESSION['flash']);
     return is_array($flash) ? $flash : null;
+}
+
+/** "1 project" / "3 projects" — naive, but every noun we pluralise is regular. */
+function plural_en(int $count, string $noun): string
+{
+    return $count . ' ' . $noun . ($count === 1 ? '' : 's');
 }
 
 function h(?string $value): string

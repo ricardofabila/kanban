@@ -24,8 +24,11 @@ To reset everything — password included — delete `data/database.sqlite`.
 ```
 .
 ├── index.php         Single-page dashboard shell (auth-gated)
+├── plan.php          Builds a weekly-planning prompt from the board
+├── plan-prompt.php   The prompt itself: shape, wording, observations
 ├── backups.php       Backups page: snapshot, restore, prune
 ├── backup-store.php  The backups folder and the operations against it
+├── board.php         Reads the board — shared by the API and the plan page
 ├── login.php         First-run password setup + sign-in
 ├── logout.php        Destroys the session
 ├── api.php           JSON API: GET returns the board, POST performs all writes
@@ -33,12 +36,34 @@ To reset everything — password included — delete `data/database.sqlite`.
 ├── assets/
 │   ├── app.js        Board: rendering, dialogs, SortableJS, fetch calls
 │   ├── backups.js    Backups page: confirmations, local timestamps
+│   ├── plan.js       Plan page: copy to clipboard
 │   ├── favicon.svg   Tab icon
 │   └── styles.css    All styling, light + dark
 └── data/
     ├── database.sqlite   Created on first run (gitignored)
     └── backups/          Backup snapshots (gitignored)
 ```
+
+## Plan my week
+
+**Plan my week** in the top bar turns the whole board into a prompt you paste
+into an AI assistant. It lists every project, what you said it is for, and
+exactly where it stands column by column, then asks for a week that keeps all of
+them moving rather than only the loudest one.
+
+Two optional inputs shape it: roughly how much time you have this week, and
+anything else going on. They travel in the querystring, so a plan you like can
+be bookmarked.
+
+The quality depends on the **description** on each project — what it is for and
+what it will do for you. Edit it from the pencil on any project row. Without
+one, the prompt says so and tells the assistant to weight that project less and
+ask you about it; the page also warns you which projects are missing theirs.
+
+The prompt reports the board's shape and lets the assistant interpret it. It
+deliberately does not guess what a column *means* — "Done" and "Icebox" are both
+just names someone chose — so it says things like "all 4 cards are still in the
+first column" rather than claiming a project has not started.
 
 ## Backups
 
@@ -75,13 +100,18 @@ reaches the filesystem.
 
 | Table      | Columns                                                  |
 |------------|----------------------------------------------------------|
-| `projects` | `id`, `title`, `sort_order`                              |
+| `projects` | `id`, `title`, `description`, `sort_order`               |
 | `columns`  | `id`, `project_id` → projects, `title`, `sort_order`     |
 | `tasks`    | `id`, `column_id` → columns, `title`, `description`, `sort_order` |
 | `settings` | `key`, `value` — holds the password hash                 |
 
 Foreign keys use `ON DELETE CASCADE` and `PRAGMA foreign_keys = ON` is set on
 every connection, so deleting a project takes its columns and tasks with it.
+
+`projects.description` was added after the first release, so `init_schema()`
+patches it into older databases with an `ALTER TABLE`. That runs on every
+connection, which means a database that arrives by restoring a pre-upgrade
+backup is upgraded too.
 
 ## API
 
@@ -107,7 +137,7 @@ session CSRF token in an `X-CSRF-Token` header.
 | Action            | Payload                                                       |
 |-------------------|---------------------------------------------------------------|
 | `project.create`  | `title` — also creates To Do / In Progress / Done             |
-| `project.rename`  | `id`, `title`                                                  |
+| `project.update`  | `id`, `title`, `description`                                   |
 | `project.delete`  | `id` — returns a snapshot of everything removed, for undo       |
 | `project.reorder` | `ids` — full ordered list                                      |
 | `column.create`   | `project_id`, `title`                                          |

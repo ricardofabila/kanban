@@ -215,8 +215,3 @@ function format_when(int $timestamp): string
 
     return date('j M Y', $timestamp);
 }
-
-function plural_en(int $count, string $noun): string
-{
-    return $count . ' ' . $noun . ($count === 1 ? '' : 's');
-}

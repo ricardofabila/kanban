@@ -79,6 +79,7 @@ $counts   = [
   </div>
   <div class="topbar-right">
     <a class="btn btn-quiet" href="index.php">&larr; Board</a>
+    <a class="btn btn-quiet" href="plan.php">Plan my week</a>
     <a class="btn btn-quiet" href="logout.php">Sign out</a>
   </div>
 </header>
