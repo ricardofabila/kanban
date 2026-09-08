@@ -10,12 +10,18 @@ PHP 8.1+ with `pdo_sqlite` (bundled with PHP by default).
 ## Run it
 
 ```bash
-php -S 127.0.0.1:8000 -t .
+php -S 127.0.0.1:8000 router.php
 ```
 
-Open <http://127.0.0.1:8000>. The first visit asks you to choose a password;
-that hash and the SQLite file are created automatically under `data/`, along
-with four starter boards you can rename or delete.
+Open <http://127.0.0.1:8000>.
+
+Pass `router.php`. PHP's built-in server ignores `.htaccess`, so without it the
+whole of `data/` is served as static files — the database, the backups and every
+session file, unauthenticated. The router returns 404 for those paths.
+
+The first visit asks you to choose a password; that hash and the SQLite file are
+created automatically under `data/`, along with four starter boards you can
+rename or delete.
 
 To reset everything — password included — delete `data/database.sqlite`.
 
@@ -23,6 +29,7 @@ To reset everything — password included — delete `data/database.sqlite`.
 
 ```
 .
+├── router.php        Dev-server guard: hides data/ from `php -S`
 ├── index.php         Single-page dashboard shell (auth-gated)
 ├── plan.php          Builds a weekly-planning prompt from the board
 ├── plan-prompt.php   The prompt itself: shape, wording, observations
@@ -39,10 +46,40 @@ To reset everything — password included — delete `data/database.sqlite`.
 │   ├── plan.js       Plan page: copy to clipboard
 │   ├── favicon.svg   Tab icon
 │   └── styles.css    All styling, light + dark
-└── data/
+└── data/                 Created on first run, ignored by git
+    ├── .htaccess         Denies HTTP access to everything below (written by the app)
     ├── database.sqlite   Created on first run (gitignored)
-    └── backups/          Backup snapshots (gitignored)
+    ├── backups/          Backup snapshots (gitignored)
+    └── sessions/         Session files (gitignored)
 ```
+
+## Staying signed in
+
+Sessions last **30 days**, as a rolling window — every request pushes the
+deadline out, so you only get signed out after leaving the app alone that long,
+or by signing out. Change `SESSION_LIFETIME` in `config.php` to adjust it.
+
+PHP's defaults are much shorter, and both had to be widened:
+
+| | Default | Here |
+|---|---|---|
+| `session.gc_maxlifetime` | 1440s — 24 minutes idle | 30 days |
+| `session.cookie_lifetime` | 0 — until the browser closes | 30 days |
+
+Session files are written to `data/sessions/` rather than the default shared
+temp directory. This matters more than the numbers above: on a machine running
+other PHP applications, the save path is shared, and their garbage collectors
+delete by *their* `gc_maxlifetime`. A long lifetime set here would be quietly
+overruled by a neighbour's short one. If that directory cannot be created or
+written, the app falls back to the system default rather than failing.
+
+Because the directory is ours, no distribution's session-cleanup cron covers it,
+so PHP is told to collect it itself — expired files are still removed and the
+folder does not grow without bound.
+
+`session.use_strict_mode` is on, so the server never adopts a session id it did
+not issue. That matters more with a long lifetime: it stops someone fixing a
+session in advance by handing you a prepared link.
 
 ## Plan my week
 
@@ -207,8 +244,11 @@ up — undoing a column delete after its board is gone, for instance.
 ## Deploying
 
 Serve the folder with Apache/nginx + PHP-FPM and put `data/` outside the web
-root, or block it — neither `data/database.sqlite` nor anything in
-`data/backups/` must be publicly fetchable. Run it over HTTPS so the session
+root, or block it — nothing under `data/` may be publicly fetchable: not the
+database, not the backups, and least of all `data/sessions/`, where a single
+leaked file is a working login. `data/.htaccess` denies access under Apache;
+on nginx you must block the location in the server config yourself. The app
+writes that guard whenever it creates the directory, so it cannot go missing. Run it over HTTPS so the session
 cookie gets the `secure` flag.
 
 `data/backups/` grows until you prune it; the page lists sizes so you can see

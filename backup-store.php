@@ -15,6 +15,7 @@ const BACKUP_REQUIRED_TABLES = ['projects', 'columns', 'tasks'];
 
 function backup_dir(): string
 {
+    data_dir();
     if (!is_dir(BACKUP_DIR) && !mkdir(BACKUP_DIR, 0775, true) && !is_dir(BACKUP_DIR)) {
         throw new RuntimeException('Could not create the backups folder.');
     }

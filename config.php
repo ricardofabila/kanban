@@ -8,14 +8,110 @@ declare(strict_types=1);
 
 const DB_PATH = __DIR__ . '/data/database.sqlite';
 
+/**
+ * How long a signed-in session lasts. This is a rolling window — every request
+ * pushes the deadline out again — so in practice you stay signed in unless you
+ * leave the app alone for this long, or sign out.
+ *
+ * Change this one number to make sessions shorter or longer.
+ */
+const SESSION_LIFETIME = 30 * 24 * 60 * 60; // 30 days
+
+/** Session files live here rather than in the shared system temp directory. */
+const SESSION_DIR = __DIR__ . '/data/sessions';
+
+/**
+ * The data directory, created on demand with an Apache deny rule dropped in.
+ *
+ * The database, the backups and the session files all live under here and none
+ * of them should ever be fetchable over HTTP — a readable session file is a
+ * working login. The guard is written alongside the directory rather than
+ * committed, so it cannot go missing if the directory is recreated by hand.
+ */
+function data_dir(): string
+{
+    $dir = __DIR__ . '/data';
+
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0700, true);
+    }
+
+    $guard = $dir . '/.htaccess';
+    if (!file_exists($guard) && is_dir($dir) && is_writable($dir)) {
+        @file_put_contents($guard, <<<'HTACCESS'
+            # The database, its backups and the session files live here. None of
+            # them may be served over HTTP. Apache only — on nginx, block this
+            # location in the server config instead.
+            <IfModule mod_authz_core.c>
+                Require all denied
+            </IfModule>
+            <IfModule !mod_authz_core.c>
+                Order allow,deny
+                Deny from all
+            </IfModule>
+            HTACCESS);
+    }
+
+    return $dir;
+}
+
 /* ---------------------------------------------------------------- session */
 
-session_set_cookie_params([
-    'httponly' => true,
-    'samesite' => 'Lax',
-    'secure'   => !empty($_SERVER['HTTPS']),
-]);
-session_start();
+/**
+ * PHP's defaults are short: session data is collectable after 24 minutes idle,
+ * and the cookie is dropped when the browser closes. Both are widened here.
+ */
+function start_session(): void
+{
+    // Keep session files in our own directory. The default save path is shared
+    // with every other PHP application on the machine, and their garbage
+    // collectors delete by *their* gc_maxlifetime, not ours — so a long
+    // lifetime set here would be quietly overruled by a neighbour's short one.
+    data_dir();
+    if (!is_dir(SESSION_DIR)) {
+        @mkdir(SESSION_DIR, 0700, true);
+    }
+    if (is_dir(SESSION_DIR) && is_writable(SESSION_DIR)) {
+        session_save_path(SESSION_DIR);
+
+        // A custom save path is not covered by the session-cleanup cron some
+        // distributions ship, so let PHP collect this directory itself.
+        ini_set('session.gc_probability', '1');
+        ini_set('session.gc_divisor', '100');
+    }
+
+    ini_set('session.gc_maxlifetime', (string) SESSION_LIFETIME);
+
+    // Refuse a session id the server never issued, so a long-lived session
+    // cannot be fixed in advance by someone handing you a prepared link.
+    ini_set('session.use_strict_mode', '1');
+
+    session_set_cookie_params([
+        'lifetime' => SESSION_LIFETIME,
+        'httponly' => true,
+        'samesite' => 'Lax',
+        'secure'   => !empty($_SERVER['HTTPS']),
+    ]);
+
+    session_start();
+
+    // PHP sends the session cookie once, at its original expiry. Without this
+    // the cookie would still lapse SESSION_LIFETIME after sign-in no matter how
+    // active you were; re-sending it on each request makes the window roll.
+    if (isset($_COOKIE[session_name()])) {
+        $params = session_get_cookie_params();
+        setcookie(session_name(), session_id(), [
+            'expires'  => time() + SESSION_LIFETIME,
+            'path'     => $params['path'],
+            'domain'   => $params['domain'],
+            'secure'   => $params['secure'],
+            'httponly' => $params['httponly'],
+            'samesite' => $params['samesite'] ?? 'Lax',
+        ]);
+    }
+}
+
+start_session();
 
 if (empty($_SESSION['csrf'])) {
     $_SESSION['csrf'] = bin2hex(random_bytes(32));
@@ -45,8 +141,8 @@ final class Database
 
     private static function connect(): PDO
     {
-    $dir = dirname(DB_PATH);
-    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+    $dir = data_dir();
+    if (!is_dir($dir)) {
         throw new RuntimeException('Unable to create data directory: ' . $dir);
     }
 

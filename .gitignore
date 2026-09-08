@@ -1,10 +1,6 @@
-# SQLite database and its journals — never commit user data
-/data/*.sqlite
-/data/*.sqlite-journal
-/data/*.sqlite-wal
-/data/*.sqlite-shm
-
-# Backup snapshots are database copies — same reason
-/data/backups/
+# Everything here is runtime state and none of it belongs in the repo: the
+# database, its journals, the backup snapshots, and the session files — each of
+# which is a live login.
+/data/
 
 .DS_Store
